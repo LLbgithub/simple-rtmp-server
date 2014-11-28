@@ -31,6 +31,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <srs_core.hpp>
 
 #include <srs_protocol_io.hpp>
+#include <srs_librtmp.hpp>
     
 /**
 * simple socket stream,
