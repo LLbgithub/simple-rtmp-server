@@ -49,13 +49,16 @@ class SrsBandwidth;
 class SrsKbps;
 class SrsRtmpClient;
 class SrsSharedPtrMessage;
-class SrsRecvThread;
+class SrsQueueRecvThread;
+class SrsPublishRecvThread;
 
 /**
 * the client provides the main logic control for RTMP clients.
 */
 class SrsRtmpConn : public virtual SrsConnection, public virtual ISrsReloadHandler
 {
+    // for the thread to directly access any field of connection.
+    friend class SrsPublishRecvThread;
 private:
     SrsRequest* req;
     SrsResponse* res;
@@ -89,11 +92,11 @@ private:
     virtual int stream_service_cycle();
     virtual int check_vhost();
     virtual int playing(SrsSource* source);
-    virtual int do_playing(SrsSource* source, SrsRecvThread* trd);
+    virtual int do_playing(SrsSource* source, SrsQueueRecvThread* trd);
     virtual int fmle_publishing(SrsSource* source);
-    virtual int do_fmle_publishing(SrsSource* source);
     virtual int flash_publishing(SrsSource* source);
-    virtual int do_flash_publishing(SrsSource* source);
+    virtual int do_publishing(SrsSource* source, SrsPublishRecvThread* trd);
+    virtual int handle_publish_message(SrsSource* source, SrsMessage* msg, bool is_fmle, bool vhost_is_edge);
     virtual int process_publish_message(SrsSource* source, SrsMessage* msg, bool vhost_is_edge);
     virtual int process_play_control_msg(SrsConsumer* consumer, SrsMessage* msg);
 private:

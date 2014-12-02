@@ -25,9 +25,20 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 #include <srs_protocol_rtmp.hpp>
 #include <srs_protocol_stack.hpp>
+#include <srs_app_rtmp_conn.hpp>
 
-SrsRecvThread::SrsRecvThread(SrsRtmpServer* rtmp_sdk)
+ISrsMessageHandler::ISrsMessageHandler()
 {
+}
+
+ISrsMessageHandler::~ISrsMessageHandler()
+{
+}
+
+SrsRecvThread::SrsRecvThread(ISrsMessageHandler* msg_handler, SrsRtmpServer* rtmp_sdk, int timeout_ms)
+{
+    timeout = timeout_ms;
+    handler = msg_handler;
     rtmp = rtmp_sdk;
     trd = new SrsThread(this, 0, true);
 }
@@ -36,38 +47,9 @@ SrsRecvThread::~SrsRecvThread()
 {
     // stop recv thread.
     stop();
-    
+
     // destroy the thread.
     srs_freep(trd);
-    
-    // clear all messages.
-    std::vector<SrsMessage*>::iterator it;
-    for (it = queue.begin(); it != queue.end(); ++it) {
-        SrsMessage* msg = *it;
-        srs_freep(msg);
-    }
-    queue.clear();
-}
-
-bool SrsRecvThread::empty()
-{
-    return queue.empty();
-}
-
-int SrsRecvThread::size()
-{
-    return (int)queue.size();
-}
-
-SrsMessage* SrsRecvThread::pump()
-{
-    srs_assert(!queue.empty());
-    
-    SrsMessage* msg = *queue.begin();
-    
-    queue.erase(queue.begin());
-    
-    return msg;
 }
 
 int SrsRecvThread::start()
@@ -83,35 +65,34 @@ void SrsRecvThread::stop()
 int SrsRecvThread::cycle()
 {
     int ret = ERROR_SUCCESS;
-    
-    // we only recv one message and then process it,
-    // for the message may cause the thread to stop,
-    // when stop, the thread is freed, so the messages
-    // are dropped.
-    if (!queue.empty()) {
-        st_usleep(SRS_CONSTS_RTMP_PULSE_TIMEOUT_US);
+
+    if (!handler->can_handle()) {
+        st_usleep(timeout * 1000);
         return ret;
     }
-    
+
     SrsMessage* msg = NULL;
-    
+
     if ((ret = rtmp->recv_message(&msg)) != ERROR_SUCCESS) {
         if (!srs_is_client_gracefully_close(ret)) {
             srs_error("recv client control message failed. ret=%d", ret);
         }
-        
+
         // we use no timeout to recv, should never got any error.
         trd->stop_loop();
-        
+
         return ret;
     }
     srs_verbose("play loop recv message. ret=%d", ret);
-    
-    // put into queue, the send thread will get and process it,
-    // @see SrsRtmpConn::process_play_control_msg
-    queue.push_back(msg);
-    
+
+    handler->handle(msg);
+
     return ret;
+}
+
+void SrsRecvThread::stop_loop()
+{
+    trd->stop_loop();
 }
 
 void SrsRecvThread::on_thread_start()
@@ -122,8 +103,8 @@ void SrsRecvThread::on_thread_start()
     // @see https://github.com/winlinvip/simple-rtmp-server/issues/194
     // @see: https://github.com/winlinvip/simple-rtmp-server/issues/217
     rtmp->set_recv_timeout(ST_UTIME_NO_TIMEOUT);
-    
-    // disable the protocol auto response, 
+
+    // disable the protocol auto response,
     // for the isolate recv thread should never send any messages.
     rtmp->set_auto_response(false);
 }
@@ -133,8 +114,143 @@ void SrsRecvThread::on_thread_stop()
     // enable the protocol auto response,
     // for the isolate recv thread terminated.
     rtmp->set_auto_response(true);
-    
+
     // reset the timeout to pulse mode.
-    rtmp->set_recv_timeout(SRS_CONSTS_RTMP_PULSE_TIMEOUT_US);
+    rtmp->set_recv_timeout(timeout * 1000);
 }
 
+SrsQueueRecvThread::SrsQueueRecvThread(SrsRtmpServer* rtmp_sdk, int timeout_ms)
+    : trd(this, rtmp_sdk, timeout_ms)
+{
+}
+
+SrsQueueRecvThread::~SrsQueueRecvThread()
+{
+    trd.stop();
+
+    // clear all messages.
+    std::vector<SrsMessage*>::iterator it;
+    for (it = queue.begin(); it != queue.end(); ++it) {
+        SrsMessage* msg = *it;
+        srs_freep(msg);
+    }
+    queue.clear();
+}
+
+int SrsQueueRecvThread::start()
+{
+    return trd.start();
+}
+
+void SrsQueueRecvThread::stop()
+{
+    trd.stop();
+}
+
+bool SrsQueueRecvThread::empty()
+{
+    return queue.empty();
+}
+
+int SrsQueueRecvThread::size()
+{
+    return (int)queue.size();
+}
+
+SrsMessage* SrsQueueRecvThread::pump()
+{
+    srs_assert(!queue.empty());
+    
+    SrsMessage* msg = *queue.begin();
+    
+    queue.erase(queue.begin());
+    
+    return msg;
+}
+
+bool SrsQueueRecvThread::can_handle()
+{
+    // we only recv one message and then process it,
+    // for the message may cause the thread to stop,
+    // when stop, the thread is freed, so the messages
+    // are dropped.
+    return empty();
+}
+
+int SrsQueueRecvThread::handle(SrsMessage* msg)
+{
+    // put into queue, the send thread will get and process it,
+    // @see SrsRtmpConn::process_play_control_msg
+    queue.push_back(msg);
+
+    return ERROR_SUCCESS;
+}
+
+SrsPublishRecvThread::SrsPublishRecvThread(
+    SrsRtmpServer* rtmp_sdk, int timeout_ms,
+    SrsRtmpConn* conn, SrsSource* source, bool is_fmle, bool is_edge
+): trd(this, rtmp_sdk, timeout_ms)
+{
+    _conn = conn;
+    _source = source;
+    _is_fmle = is_fmle;
+    _is_edge = is_edge;
+
+    recv_error_code = ERROR_SUCCESS;
+    _nb_msgs = 0;
+}
+
+SrsPublishRecvThread::~SrsPublishRecvThread()
+{
+    trd.stop();
+}
+
+int64_t SrsPublishRecvThread::nb_msgs()
+{
+    return _nb_msgs;
+}
+
+int SrsPublishRecvThread::error_code()
+{
+    return recv_error_code;
+}
+
+int SrsPublishRecvThread::start()
+{
+    return trd.start();
+}
+
+void SrsPublishRecvThread::stop()
+{
+    trd.stop();
+}
+
+bool SrsPublishRecvThread::can_handle()
+{
+    // publish thread always can handle message.
+    return true;
+}
+
+int SrsPublishRecvThread::handle(SrsMessage* msg)
+{
+    int ret = ERROR_SUCCESS;
+
+    _nb_msgs++;
+
+    // the rtmp connection will handle this message,
+    // quit the thread loop when error.
+    recv_error_code = ret = _conn->handle_publish_message(_source, msg, _is_fmle, _is_edge);
+
+    // when error, use stop loop to terminate the thread normally,
+    // for we are in the thread loop now, and should never use stop() to terminate it.
+    if (ret != ERROR_SUCCESS) {
+        trd.stop_loop();
+    }
+
+    // must always free it,
+    // the source will copy it if need to use.
+    srs_freep(msg);
+
+    // TODO: FIXME: implements it.
+    return ret;
+}
