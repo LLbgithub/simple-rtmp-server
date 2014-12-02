@@ -49,12 +49,9 @@ using namespace std;
 #include <srs_kernel_file.hpp>
 #include <srs_lib_bandwidth.hpp>
 
-// if want to use your log, define the folowing macro.
-#ifndef SRS_HIJACK_LOG
-    // kernel module.
-    ISrsLog* _srs_log = new ISrsLog();
-    ISrsThreadContext* _srs_context = new ISrsThreadContext();
-#endif
+// kernel module.
+ISrsLog* _srs_log = new ISrsLog();
+ISrsThreadContext* _srs_context = new ISrsThreadContext();
 
 /**
 * export runtime context.
@@ -206,7 +203,10 @@ srs_rtmp_t srs_rtmp_create2(const char* url)
 
 void srs_rtmp_destroy(srs_rtmp_t rtmp)
 {
-    srs_assert(rtmp != NULL);
+    if (!rtmp) {
+        return;
+    }
+    
     Context* context = (Context*)rtmp;
     
     srs_freep(context);
@@ -1415,11 +1415,6 @@ void srs_amf0_free(srs_amf0_t amf0)
     srs_freep(any);
 }
 
-void srs_amf0_free_bytes(char* data)
-{
-    srs_freep(data);
-}
-
 int srs_amf0_size(srs_amf0_t amf0)
 {
     SrsAmf0Any* any = (SrsAmf0Any*)amf0;
@@ -2061,7 +2056,7 @@ int srs_human_print_rtmp_packet(char type, u_int32_t timestamp, char* data, int 
             
             char* amf0_str = NULL;
             srs_human_raw("%s", srs_human_amf0_print(amf0, &amf0_str, NULL));
-            srs_amf0_free_bytes(amf0_str);
+            srs_freep(amf0_str);
         }
     } else {
         srs_human_trace("Unknown packet type=%s, dts=%d, pts=%d, size=%d", 
@@ -2100,6 +2095,23 @@ const char* srs_human_format_time()
     
     return buf;
 }
+
+
+#ifdef SRS_HIJACK_IO
+srs_hijack_io_t srs_hijack_io_get(srs_rtmp_t rtmp)
+{
+    if (!rtmp) {
+        return NULL;
+    }
+    
+    Context* context = (Context*)rtmp;
+    if (!context->skt) {
+        return NULL;
+    }
+    
+    return context->skt->hijack_io();
+}
+#endif
 
 #ifdef __cplusplus
 }
