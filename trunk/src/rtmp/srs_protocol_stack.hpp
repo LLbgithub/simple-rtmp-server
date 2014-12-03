@@ -53,6 +53,7 @@ class SrsMessageHeader;
 class SrsMessage;
 class SrsChunkStream;
 class SrsSharedPtrMessage;
+class IMergeReadHandler;
 
 /**
 * 4.1. Message Header
@@ -269,6 +270,17 @@ public:
     * @see the auto_response_when_recv and manual_response_queue.
     */
     virtual int manual_response_flush();
+public:
+    /**
+    * to improve read performance, merge some packets then read,
+    * when it on and read small bytes, we sleep to wait more data.,
+    * that is, we merge some data to read together.
+    * @param v true to ename merged read.
+    * @param max_buffer the max buffer size, the socket buffer.
+    * @param handler the handler when merge read is enabled.
+    * @see https://github.com/winlinvip/simple-rtmp-server/issues/241
+    */
+    virtual void set_merge_read(bool v, int max_buffer, IMergeReadHandler* handler);
 public:
     /**
     * set/get the recv timeout in us.

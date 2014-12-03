@@ -33,6 +33,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <vector>
 
 #include <srs_app_thread.hpp>
+#include <srs_protocol_buffer.hpp>
 
 class SrsRtmpServer;
 class SrsMessage;
@@ -63,6 +64,12 @@ public:
     * when recv message error.
     */
     virtual void on_recv_error(int ret) = 0;
+    /**
+    * when thread start or stop, 
+    * for example, the message handler can set whether auto response.
+    */
+    virtual void on_thread_start() = 0;
+    virtual void on_thread_stop() = 0;
 };
 
 /**
@@ -99,6 +106,7 @@ class SrsQueueRecvThread : public ISrsMessageHandler
 private:
     std::vector<SrsMessage*> queue;
     SrsRecvThread trd;
+    SrsRtmpServer* rtmp;
     // the recv thread error code.
     int recv_error_code;
 public:
@@ -116,38 +124,62 @@ public:
     virtual bool can_handle();
     virtual int handle(SrsMessage* msg);
     virtual void on_recv_error(int ret);
+public:
+    virtual void on_thread_start();
+    virtual void on_thread_stop();
 };
 
 /**
- * the publish recv thread got message and callback the source method to process message.
+* the publish recv thread got message and callback the source method to process message.
 * @see: https://github.com/winlinvip/simple-rtmp-server/issues/237
- */
-class SrsPublishRecvThread : public ISrsMessageHandler
+*/
+class SrsPublishRecvThread : virtual public ISrsMessageHandler, virtual public IMergeReadHandler
 {
 private:
     SrsRecvThread trd;
+    SrsRtmpServer* rtmp;
     // the msgs already got.
     int64_t _nb_msgs;
+    // for mr(merged read),
+    // @see https://github.com/winlinvip/simple-rtmp-server/issues/241
+    int mr_fd;
+    int mr_small_bytes;
+    int mr_sleep_ms;
     // the recv thread error code.
     int recv_error_code;
     SrsRtmpConn* _conn;
+    // the params for conn callback.
     SrsSource* _source;
     bool _is_fmle;
     bool _is_edge;
+    // the error timeout cond
+    // @see https://github.com/winlinvip/simple-rtmp-server/issues/244
+    st_cond_t error;
 public:
-    SrsPublishRecvThread(SrsRtmpServer* rtmp_sdk, int timeout_ms,
+    SrsPublishRecvThread(SrsRtmpServer* rtmp_sdk, int fd, int timeout_ms,
         SrsRtmpConn* conn, SrsSource* source, bool is_fmle, bool is_edge);
     virtual ~SrsPublishRecvThread();
 public:
+    /**
+    * wait for error for some timeout.
+    */
+    virtual int wait(int timeout_ms);
     virtual int64_t nb_msgs();
     virtual int error_code();
 public:
     virtual int start();
     virtual void stop();
+    virtual void on_thread_start();
+    virtual void on_thread_stop();
+// interface ISrsMessageHandler    
 public:
     virtual bool can_handle();
     virtual int handle(SrsMessage* msg);
     virtual void on_recv_error(int ret);
+// interface IMergeReadHandler
+public:
+    virtual void on_read(ssize_t nread);
+    virtual void on_buffer_change(int nb_buffer);
 };
 
 #endif

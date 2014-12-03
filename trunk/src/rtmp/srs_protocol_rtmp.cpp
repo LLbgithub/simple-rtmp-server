@@ -745,6 +745,11 @@ void SrsRtmpServer::set_auto_response(bool v)
     protocol->set_auto_response(v);
 }
 
+void SrsRtmpServer::set_merge_read(bool v, int max_buffer, IMergeReadHandler* handler)
+{
+    protocol->set_merge_read(v, max_buffer, handler);
+}
+
 void SrsRtmpServer::set_recv_timeout(int64_t timeout_us)
 {
     protocol->set_recv_timeout(timeout_us);

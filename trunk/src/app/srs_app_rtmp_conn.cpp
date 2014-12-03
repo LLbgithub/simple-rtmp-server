@@ -659,7 +659,7 @@ int SrsRtmpConn::fmle_publishing(SrsSource* source)
 
     // use isolate thread to recv,
     // @see: https://github.com/winlinvip/simple-rtmp-server/issues/237
-    SrsPublishRecvThread trd(rtmp, 
+    SrsPublishRecvThread trd(rtmp, st_netfd_fileno(stfd),
         SRS_CONSTS_RTMP_RECV_TIMEOUT_US / 1000, 
         this, source, true, vhost_is_edge);
 
@@ -695,7 +695,7 @@ int SrsRtmpConn::flash_publishing(SrsSource* source)
 
     // use isolate thread to recv,
     // @see: https://github.com/winlinvip/simple-rtmp-server/issues/237
-    SrsPublishRecvThread trd(rtmp, 
+    SrsPublishRecvThread trd(rtmp, st_netfd_fileno(stfd),
         SRS_CONSTS_RTMP_RECV_TIMEOUT_US / 1000, 
         this, source, false, vhost_is_edge);
 
@@ -750,17 +750,15 @@ int SrsRtmpConn::do_publishing(SrsSource* source, SrsPublishRecvThread* trd)
 
     int64_t nb_msgs = 0;
     while (true) {
-        // use small loop to check the error code, interval = 30s/100 = 300ms.
-        for (int i = 0; i < 100; i++) {
-            st_usleep(SRS_CONSTS_RTMP_RECV_TIMEOUT_US / 100);
+        // cond wait for error.
+        trd->wait(SRS_CONSTS_RTMP_RECV_TIMEOUT_US / 1000);
 
-            // check the thread error code.
-            if ((ret = trd->error_code()) != ERROR_SUCCESS) {
-                if (!srs_is_client_gracefully_close(ret)) {
-                    srs_error("recv thread failed. ret=%d", ret);
-                }
-                return ret;
+        // check the thread error code.
+        if ((ret = trd->error_code()) != ERROR_SUCCESS) {
+            if (!srs_is_client_gracefully_close(ret)) {
+                srs_error("recv thread failed. ret=%d", ret);
             }
+            return ret;
         }
 
         // when not got any messages, timeout.
