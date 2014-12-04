@@ -42,9 +42,10 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <srs_kernel_log.hpp>
 #include <srs_kernel_error.hpp>
 #include <srs_kernel_consts.hpp>
+#include <srs_core_performance.hpp>
 
 class ISrsProtocolReaderWriter;
-class SrsBuffer;
+class SrsFastBuffer;
 class SrsPacket;
 class SrsStream;
 class SrsAmf0Object;
@@ -204,9 +205,15 @@ private:
     */
     std::map<int, SrsChunkStream*> chunk_streams;
     /**
+    * cache some frequently used chunk header.
+    * cs_cache, the chunk stream cache.
+    * @see https://github.com/winlinvip/simple-rtmp-server/issues/249
+    */
+    SrsChunkStream** cs_cache;
+    /**
     * bytes buffer cache, recv from skt, provide services for stream.
     */
-    SrsBuffer* in_buffer;
+    SrsFastBuffer* in_buffer;
     /**
     * input chunk size, default to 128, set by peer packet.
     */
@@ -250,10 +257,6 @@ private:
     */
     int32_t out_chunk_size;
 public:
-    /**
-    * use io to create the protocol stack,
-    * @param io, provides io interfaces, user must free it.
-    */
     SrsProtocol(ISrsProtocolReaderWriter* io);
     virtual ~SrsProtocol();
 public:
@@ -271,16 +274,25 @@ public:
     */
     virtual int manual_response_flush();
 public:
+#ifdef SRS_PERF_MERGED_READ
     /**
     * to improve read performance, merge some packets then read,
     * when it on and read small bytes, we sleep to wait more data.,
     * that is, we merge some data to read together.
     * @param v true to ename merged read.
-    * @param max_buffer the max buffer size, the socket buffer.
     * @param handler the handler when merge read is enabled.
     * @see https://github.com/winlinvip/simple-rtmp-server/issues/241
     */
-    virtual void set_merge_read(bool v, int max_buffer, IMergeReadHandler* handler);
+    virtual void set_merge_read(bool v, IMergeReadHandler* handler);
+    /**
+    * create buffer with specifeid size.
+    * @param buffer the size of buffer.
+    * @remark when MR(SRS_PERF_MERGED_READ) disabled, always set to 8K.
+    * @remark when buffer changed, the previous ptr maybe invalid.
+    * @see https://github.com/winlinvip/simple-rtmp-server/issues/241
+    */
+    virtual void set_recv_buffer(int buffer_size);
+#endif
 public:
     /**
     * set/get the recv timeout in us.
@@ -434,21 +446,18 @@ private:
     /**
     * read the chunk basic header(fmt, cid) from chunk stream.
     * user can discovery a SrsChunkStream by cid.
-    * @bh_size return the chunk basic header size, to remove the used bytes when finished.
     */
-    virtual int read_basic_header(char& fmt, int& cid, int& bh_size);
+    virtual int read_basic_header(char& fmt, int& cid);
     /**
     * read the chunk message header(timestamp, payload_length, message_type, stream_id) 
     * from chunk stream and save to SrsChunkStream.
-    * @mh_size return the chunk message header size, to remove the used bytes when finished.
     */
-    virtual int read_message_header(SrsChunkStream* chunk, char fmt, int bh_size, int& mh_size);
+    virtual int read_message_header(SrsChunkStream* chunk, char fmt);
     /**
     * read the chunk payload, remove the used bytes in buffer,
     * if got entire message, set the pmsg.
-    * @payload_size read size in this roundtrip, generally a chunk size or left message size.
     */
-    virtual int read_message_payload(SrsChunkStream* chunk, int bh_size, int mh_size, int& payload_size, SrsMessage** pmsg);
+    virtual int read_message_payload(SrsChunkStream* chunk, SrsMessage** pmsg);
     /**
     * when recv message, update the context.
     */

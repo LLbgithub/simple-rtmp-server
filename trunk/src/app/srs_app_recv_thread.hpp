@@ -34,11 +34,14 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 #include <srs_app_thread.hpp>
 #include <srs_protocol_buffer.hpp>
+#include <srs_core_performance.hpp>
+#include <srs_app_reload.hpp>
 
 class SrsRtmpServer;
 class SrsMessage;
 class SrsRtmpConn;
 class SrsSource;
+class SrsRequest;
 
 /**
  * for the recv thread to handle the message.
@@ -133,18 +136,23 @@ public:
 * the publish recv thread got message and callback the source method to process message.
 * @see: https://github.com/winlinvip/simple-rtmp-server/issues/237
 */
-class SrsPublishRecvThread : virtual public ISrsMessageHandler, virtual public IMergeReadHandler
+class SrsPublishRecvThread : virtual public ISrsMessageHandler
+#ifdef SRS_PERF_MERGED_READ
+    , virtual public IMergeReadHandler
+#endif
+    , virtual public ISrsReloadHandler
 {
 private:
     SrsRecvThread trd;
     SrsRtmpServer* rtmp;
+    SrsRequest* req;
     // the msgs already got.
     int64_t _nb_msgs;
     // for mr(merged read),
     // @see https://github.com/winlinvip/simple-rtmp-server/issues/241
+    bool mr;
     int mr_fd;
-    int mr_small_bytes;
-    int mr_sleep_ms;
+    int mr_sleep;
     // the recv thread error code.
     int recv_error_code;
     SrsRtmpConn* _conn;
@@ -156,7 +164,8 @@ private:
     // @see https://github.com/winlinvip/simple-rtmp-server/issues/244
     st_cond_t error;
 public:
-    SrsPublishRecvThread(SrsRtmpServer* rtmp_sdk, int fd, int timeout_ms,
+    SrsPublishRecvThread(SrsRtmpServer* rtmp_sdk, 
+        SrsRequest* _req, int mr_sock_fd, int timeout_ms, 
         SrsRtmpConn* conn, SrsSource* source, bool is_fmle, bool is_edge);
     virtual ~SrsPublishRecvThread();
 public:
@@ -178,8 +187,14 @@ public:
     virtual void on_recv_error(int ret);
 // interface IMergeReadHandler
 public:
+#ifdef SRS_PERF_MERGED_READ
     virtual void on_read(ssize_t nread);
-    virtual void on_buffer_change(int nb_buffer);
+#endif
+// interface ISrsReloadHandler
+public:
+    virtual int on_reload_vhost_mr(std::string vhost);
+private:
+    virtual void set_socket_buffer(int sleep_ms);
 };
 
 #endif

@@ -33,49 +33,19 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <vector>
 
 #include <srs_protocol_io.hpp>
+#include <srs_core_performance.hpp>
 
 /**
-* to improve read performance, merge some packets then read,
-* when it on and read small bytes, we sleep to wait more data.,
-* that is, we merge some data to read together.
-* @see https://github.com/winlinvip/simple-rtmp-server/issues/241
+* the simple buffer use vector to append bytes,
+* it's for hls and http, and need to be refined in future.
 */
-class IMergeReadHandler
-{
-public:
-    IMergeReadHandler();
-    virtual ~IMergeReadHandler();
-public:
-    /**
-    * when read from channel, notice the merge handler to sleep for
-    * some small bytes.
-    * @remark, it only for server-side, client srs-librtmp just ignore.
-    */
-    virtual void on_read(ssize_t nread) = 0;
-    /**
-    * when buffer size changed.
-    * @param nb_buffer the new buffer size.
-    */
-    virtual void on_buffer_change(int nb_buffer) = 0;
-};
-
-/**
-* the buffer provices bytes cache for protocol. generally, 
-* protocol recv data from socket, put into buffer, decode to RTMP message.
-*/
-class SrsBuffer
+class SrsSimpleBuffer
 {
 private:
-    // the merged handler
-    bool merged_read;
-    IMergeReadHandler* _handler;
-    // data and socket buffer
     std::vector<char> data;
-    char* buffer;
-    int nb_buffer;
 public:
-    SrsBuffer();
-    virtual ~SrsBuffer();
+    SrsSimpleBuffer();
+    virtual ~SrsSimpleBuffer();
 public:
     /**
     * get the length of buffer. empty if zero.
@@ -100,6 +70,86 @@ public:
     * @remark assert size is positive.
     */
     virtual void append(const char* bytes, int size);
+};
+
+#ifdef SRS_PERF_MERGED_READ
+/**
+* to improve read performance, merge some packets then read,
+* when it on and read small bytes, we sleep to wait more data.,
+* that is, we merge some data to read together.
+* @see https://github.com/winlinvip/simple-rtmp-server/issues/241
+*/
+class IMergeReadHandler
+{
+public:
+    IMergeReadHandler();
+    virtual ~IMergeReadHandler();
+public:
+    /**
+    * when read from channel, notice the merge handler to sleep for
+    * some small bytes.
+    * @remark, it only for server-side, client srs-librtmp just ignore.
+    */
+    virtual void on_read(ssize_t nread) = 0;
+};
+#endif
+
+/**
+* the buffer provices bytes cache for protocol. generally, 
+* protocol recv data from socket, put into buffer, decode to RTMP message.
+*/
+// TODO: FIXME: add utest for it.
+class SrsFastBuffer
+{
+private:
+#ifdef SRS_PERF_MERGED_READ
+    // the merged handler
+    bool merged_read;
+    IMergeReadHandler* _handler;
+#endif
+    // the user-space buffer to fill by reader,
+    // which use fast index and reset when chunk body read ok.
+    // @see https://github.com/winlinvip/simple-rtmp-server/issues/248
+    // ptr to the current read position.
+    char* p;
+    // ptr to the content end.
+    char* end;
+    // ptr to the buffer.
+    //      buffer <= p <= end <= buffer+nb_buffer
+    char* buffer;
+    // the max size of buffer.
+    int nb_buffer;
+public:
+    SrsFastBuffer();
+    virtual ~SrsFastBuffer();
+public:
+    /**
+    * create buffer with specifeid size.
+    * @param buffer the size of buffer.
+    * @remark when MR(SRS_PERF_MERGED_READ) disabled, always set to 8K.
+    * @remark when buffer changed, the previous ptr maybe invalid.
+    * @see https://github.com/winlinvip/simple-rtmp-server/issues/241
+    */
+    virtual void set_buffer(int buffer_size);
+public:
+    /**
+    * read 1byte from buffer, move to next bytes.
+    * @remark assert buffer already grow(1).
+    */
+    virtual char read_1byte();
+    /**
+    * read a slice in size bytes, move to next bytes.
+    * user can use this char* ptr directly, and should never free it.
+    * @remark assert buffer already grow(size).
+    * @remark the ptr returned maybe invalid after grow(x).
+    */
+    virtual char* read_slice(int size);
+    /**
+    * skip some bytes in buffer.
+    * @param size the bytes to skip. positive to next; negative to previous.
+    * @remark assert buffer already grow(size).
+    */
+    virtual void skip(int size);
 public:
     /**
     * grow buffer to the required size, loop to read from skt to fill.
@@ -110,28 +160,17 @@ public:
     */
     virtual int grow(ISrsBufferReader* reader, int required_size);
 public:
+#ifdef SRS_PERF_MERGED_READ
     /**
     * to improve read performance, merge some packets then read,
     * when it on and read small bytes, we sleep to wait more data.,
     * that is, we merge some data to read together.
     * @param v true to ename merged read.
-    * @param max_buffer the max buffer size, the socket buffer.
     * @param handler the handler when merge read is enabled.
     * @see https://github.com/winlinvip/simple-rtmp-server/issues/241
     */
-    virtual void set_merge_read(bool v, int max_buffer, IMergeReadHandler* handler);
-    /**
-    * when chunk size changed, the buffer should change the buffer also.
-    * to keep the socket buffer size always greater than chunk size.
-    * @see https://github.com/winlinvip/simple-rtmp-server/issues/241
-    */
-    virtual void on_chunk_size(int32_t chunk_size);
-    /**
-    * get the size of socket buffer to read.
-    */
-    virtual int buffer_size();
-private:
-    virtual void reset_buffer(int size);
+    virtual void set_merge_read(bool v, IMergeReadHandler* handler);
+#endif
 };
 
 #endif

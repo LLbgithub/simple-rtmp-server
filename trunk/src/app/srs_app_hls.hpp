@@ -50,7 +50,6 @@ extern int aac_sample_rates[];
 #include <string>
 #include <vector>
 
-class SrsBuffer;
 class SrsSharedPtrMessage;
 class SrsCodecSample;
 class SrsMpegtsFrame;
@@ -62,6 +61,7 @@ class SrsRequest;
 class SrsPithyPrint;
 class SrsSource;
 class SrsFileWriter;
+class SrsSimpleBuffer;
 
 /**
 * jitter correct for audio,
@@ -109,8 +109,8 @@ public:
     virtual ~SrsTSMuxer();
 public:
     virtual int open(std::string _path);
-    virtual int write_audio(SrsMpegtsFrame* af, SrsBuffer* ab);
-    virtual int write_video(SrsMpegtsFrame* vf, SrsBuffer* vb);
+    virtual int write_audio(SrsMpegtsFrame* af, SrsSimpleBuffer* ab);
+    virtual int write_video(SrsMpegtsFrame* vf, SrsSimpleBuffer* vb);
     virtual void close();
 };
 
@@ -196,8 +196,8 @@ public:
     * that is whether the current segment duration >= the segment in config
     */
     virtual bool is_segment_overflow();
-    virtual int flush_audio(SrsMpegtsFrame* af, SrsBuffer* ab);
-    virtual int flush_video(SrsMpegtsFrame* af, SrsBuffer* ab, SrsMpegtsFrame* vf, SrsBuffer* vb);
+    virtual int flush_audio(SrsMpegtsFrame* af, SrsSimpleBuffer* ab);
+    virtual int flush_video(SrsMpegtsFrame* af, SrsSimpleBuffer* ab, SrsMpegtsFrame* vf, SrsSimpleBuffer* vb);
     /**
     * close segment(ts).
     * @param log_desc the description for log.
@@ -231,9 +231,9 @@ class SrsHlsCache
 private:
     // current frame and buffer
     SrsMpegtsFrame* af;
-    SrsBuffer* ab;
+    SrsSimpleBuffer* ab;
     SrsMpegtsFrame* vf;
-    SrsBuffer* vb;
+    SrsSimpleBuffer* vb;
 private:
     // the audio cache buffer start pts, to flush audio if full.
     int64_t audio_buffer_start_pts;

@@ -33,6 +33,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <string>
 
 #include <srs_protocol_stack.hpp>
+#include <srs_core_performance.hpp>
 
 class SrsProtocol;
 class ISrsProtocolReaderWriter;
@@ -343,16 +344,25 @@ public:
     * @see: https://github.com/winlinvip/simple-rtmp-server/issues/217
     */
     virtual void set_auto_response(bool v);
+#ifdef SRS_PERF_MERGED_READ
     /**
     * to improve read performance, merge some packets then read,
     * when it on and read small bytes, we sleep to wait more data.,
     * that is, we merge some data to read together.
     * @param v true to ename merged read.
-    * @param max_buffer the max buffer size, the socket buffer.
     * @param handler the handler when merge read is enabled.
     * @see https://github.com/winlinvip/simple-rtmp-server/issues/241
     */
-    virtual void set_merge_read(bool v, int max_buffer, IMergeReadHandler* handler);
+    virtual void set_merge_read(bool v, IMergeReadHandler* handler);
+    /**
+    * create buffer with specifeid size.
+    * @param buffer the size of buffer.
+    * @remark when MR(SRS_PERF_MERGED_READ) disabled, always set to 8K.
+    * @remark when buffer changed, the previous ptr maybe invalid.
+    * @see https://github.com/winlinvip/simple-rtmp-server/issues/241
+    */
+    virtual void set_recv_buffer(int buffer_size);
+#endif
     /**
     * set/get the recv timeout in us.
     * if timeout, recv/send message return ERROR_SOCKET_TIMEOUT.

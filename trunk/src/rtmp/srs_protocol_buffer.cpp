@@ -26,52 +26,41 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <srs_kernel_error.hpp>
 #include <srs_kernel_log.hpp>
 #include <srs_kernel_utility.hpp>
+#include <srs_core_performance.hpp>
 
-// 4KB=4096
-// 8KB=8192
-// 16KB=16384
-// 32KB=32768
-// 64KB=65536
-// @see https://github.com/winlinvip/simple-rtmp-server/issues/241
-#define SOCKET_READ_SIZE 65536
-// the max buffer for user space socket buffer.
-#define SOCKET_MAX_BUF 65536
+// the default recv buffer size, 128KB.
+#define SRS_DEFAULT_RECV_BUFFER_SIZE 131072
 
-IMergeReadHandler::IMergeReadHandler()
+// limit user-space buffer to 256KB, for 3Mbps stream delivery.
+//      800*2000/8=200000B(about 195KB).
+// @remark it's ok for higher stream, the buffer is ok for one chunk is 256KB.
+#define SRS_MAX_SOCKET_BUFFER 262144
+
+// the max header size,
+// @see SrsProtocol::read_message_header().
+#define SRS_RTMP_MAX_MESSAGE_HEADER 11
+
+SrsSimpleBuffer::SrsSimpleBuffer()
 {
 }
 
-IMergeReadHandler::~IMergeReadHandler()
+SrsSimpleBuffer::~SrsSimpleBuffer()
 {
 }
 
-SrsBuffer::SrsBuffer()
-{
-    merged_read = false;
-    _handler = NULL;
-    
-    nb_buffer = SOCKET_READ_SIZE;
-    buffer = new char[nb_buffer];
-}
-
-SrsBuffer::~SrsBuffer()
-{
-    srs_freep(buffer);
-}
-
-int SrsBuffer::length()
+int SrsSimpleBuffer::length()
 {
     int len = (int)data.size();
     srs_assert(len >= 0);
     return len;
 }
 
-char* SrsBuffer::bytes()
+char* SrsSimpleBuffer::bytes()
 {
     return (length() == 0)? NULL : &data.at(0);
 }
 
-void SrsBuffer::erase(int size)
+void SrsSimpleBuffer::erase(int size)
 {
     if (size <= 0) {
         return;
@@ -85,29 +74,138 @@ void SrsBuffer::erase(int size)
     data.erase(data.begin(), data.begin() + size);
 }
 
-void SrsBuffer::append(const char* bytes, int size)
+void SrsSimpleBuffer::append(const char* bytes, int size)
 {
     srs_assert(size > 0);
 
     data.insert(data.end(), bytes, bytes + size);
 }
 
-int SrsBuffer::grow(ISrsBufferReader* reader, int required_size)
+#ifdef SRS_PERF_MERGED_READ
+IMergeReadHandler::IMergeReadHandler()
+{
+}
+
+IMergeReadHandler::~IMergeReadHandler()
+{
+}
+#endif
+
+SrsFastBuffer::SrsFastBuffer()
+{
+#ifdef SRS_PERF_MERGED_READ
+    merged_read = false;
+    _handler = NULL;
+#endif
+    
+    nb_buffer = SRS_DEFAULT_RECV_BUFFER_SIZE;
+    buffer = new char[nb_buffer];
+    p = end = buffer;
+}
+
+void SrsFastBuffer::set_buffer(int buffer_size)
+{
+    // the user-space buffer size limit to a max value.
+    int nb_max_buf = srs_min(buffer_size, SRS_MAX_SOCKET_BUFFER);
+    if (nb_max_buf < buffer_size) {
+        srs_warn("limit the user-space buffer from %d to %d", buffer_size, nb_max_buf);
+    }
+
+    // only realloc when buffer changed bigger
+    if (nb_max_buf <= nb_buffer) {
+        return;
+    }
+    
+    int start = p - buffer;
+    int cap = end - p;
+    
+    char* buf = new char[nb_max_buf];
+    if (cap > 0) {
+        memcpy(buf, buffer, nb_buffer);
+    }
+    srs_freep(buffer);
+    
+    buffer = buf;
+    p = buffer + start;
+    end = p + cap;
+}
+
+SrsFastBuffer::~SrsFastBuffer()
+{
+    srs_freep(buffer);
+}
+
+char SrsFastBuffer::read_1byte()
+{
+    srs_assert(end - p >= 1);
+    return *p++;
+}
+
+char* SrsFastBuffer::read_slice(int size)
+{
+    srs_assert(end - p >= size);
+    srs_assert(p + size > buffer);
+    
+    char* ptr = p;
+    p += size;
+    
+    // reset when consumed all.
+    if (p == end) {
+        p = end = buffer;
+        srs_verbose("all consumed, reset fast buffer");
+    }
+
+    return ptr;
+}
+
+void SrsFastBuffer::skip(int size)
+{
+    srs_assert(end - p >= size);
+    srs_assert(p + size > buffer);
+    p += size;
+}
+
+int SrsFastBuffer::grow(ISrsBufferReader* reader, int required_size)
 {
     int ret = ERROR_SUCCESS;
 
-    if (required_size < 0) {
-        ret = ERROR_SYSTEM_SIZE_NEGATIVE;
-        srs_error("size is negative. size=%d, ret=%d", required_size, ret);
+    // generally the required size is ok.
+    if (end - p >= required_size) {
         return ret;
     }
 
-    while (length() < required_size) {
+    // must be positive.
+    srs_assert(required_size > 0);
+
+    // when read payload or there is no space to read,
+    // reset the buffer with exists bytes.
+    int max_to_read = buffer + nb_buffer - end;
+    if (required_size > SRS_RTMP_MAX_MESSAGE_HEADER || max_to_read < required_size) {
+        int nb_cap = end - p;
+        srs_verbose("move fast buffer %d bytes", nb_cap);
+        if (nb_cap < nb_buffer) {
+            buffer = (char*)memmove(buffer, p, nb_cap);
+            p = buffer;
+            end = p + nb_cap;
+        }
+    }
+
+    // directly check the available bytes to read in buffer.
+    max_to_read = buffer + nb_buffer - end;
+    if (max_to_read < required_size) {
+        ret = ERROR_READER_BUFFER_OVERFLOW;
+        srs_error("buffer overflow, required=%d, max=%d, ret=%d", required_size, nb_buffer, ret);
+        return ret;
+    }
+
+    // buffer is ok, read required size of bytes.
+    while (end - p < required_size) {
         ssize_t nread;
-        if ((ret = reader->read(buffer, nb_buffer, &nread)) != ERROR_SUCCESS) {
+        if ((ret = reader->read(end, max_to_read, &nread)) != ERROR_SUCCESS) {
             return ret;
         }
         
+#ifdef SRS_PERF_MERGED_READ
         /**
         * to improve read performance, merge some packets then read,
         * when it on and read small bytes, we sleep to wait more data.,
@@ -117,58 +215,21 @@ int SrsBuffer::grow(ISrsBufferReader* reader, int required_size)
         if (merged_read && _handler) {
             _handler->on_read(nread);
         }
+#endif
         
+        // we just move the ptr to next.
         srs_assert((int)nread > 0);
-        append(buffer, (int)nread);
+        end += nread;
     }
     
     return ret;
 }
 
-void SrsBuffer::set_merge_read(bool v, int max_buffer, IMergeReadHandler* handler)
+#ifdef SRS_PERF_MERGED_READ
+void SrsFastBuffer::set_merge_read(bool v, IMergeReadHandler* handler)
 {
     merged_read = v;
     _handler = handler;
-
-    // limit the max buffer.
-    int buffer_size = srs_min(max_buffer, SOCKET_MAX_BUF);
-
-    if (v && buffer_size != nb_buffer) {
-        reset_buffer(buffer_size);
-    }
-
-    if (_handler) {
-        _handler->on_buffer_change(nb_buffer);
-    }
 }
+#endif
 
-void SrsBuffer::on_chunk_size(int32_t chunk_size)
-{
-    if (nb_buffer >= chunk_size) {
-        return;
-    }
-
-    // limit the max buffer.
-    int buffer_size = srs_min(chunk_size, SOCKET_MAX_BUF);
-
-    if (buffer_size != nb_buffer) {
-        reset_buffer(buffer_size);
-    }
-
-    if (_handler) {
-        _handler->on_buffer_change(nb_buffer);
-    }
-}
-
-int SrsBuffer::buffer_size()
-{
-    return nb_buffer;
-}
-
-void SrsBuffer::reset_buffer(int size)
-{
-    srs_freep(buffer);
-
-    nb_buffer = size;
-    buffer = new char[nb_buffer];
-}
